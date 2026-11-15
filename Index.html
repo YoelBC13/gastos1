@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gastos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+html,body{background:#0F172A;font-family:Inter,system-ui,sans-serif;font-size:16px;font-weight:400;color:#E2E8F0;-webkit-tap-highlight-color:transparent}
+.lbl{font-size:11px;text-transform:uppercase;letter-spacing:.16em;color:#64748B}
+.card{background:#1E293B;border-radius:32px;padding:24px}
+.big{font-size:48px;font-weight:500;letter-spacing:-0.02em;line-height:1.1}
+.pill{border-radius:9999px;min-height:48px}
+.chip{background:#1E293B;color:#E2E8F0;padding:14px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border:2px solid transparent}
+.chip.on{border-color:#F1F5F9;color:#fff}
+input{outline:none}
+input::placeholder{color:#334155}
+.tab{min-height:64px;color:#64748B}
+.tab.on{color:#F1F5F9}
+</style>
+</head>
+<body class="min-h-screen">
+
+<header class="flex items-center justify-between px-6" style="padding-top:max(8px,env(safe-area-inset-top))">
+  <span class="lbl">Gastos</span>
+  <button id="sync" class="pill flex items-center justify-center" style="background:#1E293B;width:48px" aria-label="Sincronizar">
+    <svg id="syncI" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+  </button>
+</header>
+
+<main>
+  <section id="p-cargar" class="px-6 pt-8" style="padding-bottom:176px">
+    <label class="lbl block" for="monto">Monto</label>
+    <input id="monto" class="big w-full bg-transparent text-white mt-2" inputmode="decimal" autocomplete="off" placeholder="0" autofocus>
+    <label class="lbl block mt-8" for="detalle">Detalle · opcional</label>
+    <input id="detalle" maxlength="120" autocomplete="off" class="pill w-full mt-2 text-white" style="background:#1E293B;padding:14px 32px">
+    <div class="lbl mt-8">Categoría</div>
+    <div id="chips" class="grid grid-cols-3 gap-2 mt-2"></div>
+    <div class="fixed left-0 right-0 px-6" style="bottom:calc(64px + env(safe-area-inset-bottom) + 16px)">
+      <button id="save" class="pill w-full" style="background:#38BDF8;color:#0F172A;padding:14px 32px">Guardar</button>
+    </div>
+  </section>
+
+  <section id="p-resumen" class="hidden px-6 pt-8 pb-32 space-y-6">
+    <div>
+      <div class="lbl">Gastado este mes</div>
+      <div id="total" class="big mt-2 text-white">0,00</div>
+    </div>
+    <div class="card"><div class="lbl mb-4">Top categorías</div><div id="top" class="space-y-4"></div></div>
+    <div class="card"><div class="lbl mb-4">Evolución del mes</div><div id="evo"></div></div>
+    <div class="card"><div class="lbl mb-4">Por categoría</div><div id="dona"></div></div>
+    <div class="card"><div class="lbl mb-4">Últimos movimientos</div><div id="last" class="space-y-4"></div></div>
+  </section>
+</main>
+
+<nav class="fixed bottom-0 left-0 right-0 flex" style="background:#1E293B;padding-bottom:env(safe-area-inset-bottom)">
+  <button id="t-cargar" class="tab on flex-1 lbl" style="color:inherit" onclick="tab('cargar')">Cargar</button>
+  <button id="t-resumen" class="tab flex-1 lbl" style="color:inherit" onclick="tab('resumen')">Resumen</button>
+</nav>
+
+<script>
+var API_URL = '';   // PWA externa: pegá acá la URL /exec de tu Web App
+var API_TOKEN = ''; // Debe coincidir con API_TOKEN de Codigo.gs (si lo usás)
+var IN_GAS = !!(window.google && google.script && google.script.run);
+var cats = [], sel = '', R = null, tm = null;
+var COLORS = ['#38BDF8', '#94A3B8', '#64748B', '#475569', '#334155'];
+
+function el(i) { return document.getElementById(i); }
+function esc(s) { var d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+function fmt(n) { return Number(n).toLocaleString('es', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+function api(fn, data) {
+  return new Promise(function (ok, ko) {
+    if (IN_GAS) {
+      var r = google.script.run
+        .withSuccessHandler(ok)
+        .withFailureHandler(function (e) { ko(new Error((e && e.message) || 'Error')); });
+      r[fn].apply(r, data === undefined ? [] : [data]);
+      return;
+    }
+    var body = Object.assign({ fn: fn, token: API_TOKEN }, data || {});
+    fetch(API_URL, { method: 'POST', body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j.error) ko(new Error(j.error)); else ok(j.data); }, ko);
+  });
+}
+
+function tab(n) {
+  el('p-cargar').classList.toggle('hidden', n !== 'cargar');
+  el('p-resumen').classList.toggle('hidden', n !== 'resumen');
+  el('t-cargar').classList.toggle('on', n === 'cargar');
+  el('t-resumen').classList.toggle('on', n === 'resumen');
+  if (n === 'cargar') el('monto').focus();
+}
+
+function chips() {
+  var box = el('chips');
+  if (!cats.length) { box.innerHTML = '<div class="lbl" style="grid-column:span 3">Agregá categorías en la hoja Config</div>'; return; }
+  box.innerHTML = cats.map(function (c, i) {
+    return '<button class="pill chip' + (c === sel ? ' on' : '') + '" data-i="' + i + '">' + esc(c) + '</button>';
+  }).join('');
+}
+
+function flash(k, msg) {
+  var b = el('save');
+  var t = { saving: 'Guardando…', ok: '✓ Guardado', err: msg || 'Error, reintentá' };
+  b.textContent = t[k] || 'Guardar';
+  b.style.opacity = k === 'saving' ? '.7' : '1';
+  clearTimeout(tm);
+  if (k !== 'saving') tm = setTimeout(function () { b.textContent = 'Guardar'; b.style.opacity = '1'; }, k === 'ok' ? 1500 : 3000);
+}
+
+function guardar() {
+  var m = el('monto').value.trim().replace(',', '.');
+  if (!(parseFloat(m) > 0)) { flash('err', 'Ingresá un monto'); el('monto').focus(); return; }
+  if (!sel) { flash('err', 'Elegí una categoría'); return; }
+  var det = el('detalle').value.trim(), cat = sel;
+  el('monto').value = ''; el('detalle').value = ''; el('monto').focus();
+  flash('saving');
+  api('saveExpense', { monto: m, detalle: det, categoria: cat })
+    .then(function (r) { R = r.resumen; draw(); flash('ok'); })
+    .catch(function (e) { el('monto').value = m; el('detalle').value = det; flash('err', e.message); });
+}
+
+function draw() {
+  if (!R) return;
+  el('total').textContent = fmt(R.total);
+
+  el('top').innerHTML = R.top.length ? R.top.map(function (x, i) {
+    return '<div><div class="flex justify-between"><span>' + esc(x.c) + ' <span class="lbl">' + x.p + '%</span></span><span>' + fmt(x.m) + '</span></div>' +
+      '<div class="mt-2" style="height:8px;border-radius:9999px;background:#0F172A"><div style="height:8px;border-radius:9999px;width:' + x.p + '%;background:' + (i === 0 ? '#38BDF8' : '#64748B') + '"></div></div></div>';
+  }).join('') : '<div class="lbl">Sin gastos este mes</div>';
+
+  var e = R.evo, n = e.length, w = 300, h = 120, max = Math.max.apply(null, e.concat([1]));
+  var pts = e.map(function (v, i) {
+    var x = 4 + (n > 1 ? i * (w - 8) / (n - 1) : (w - 8) / 2);
+    var y = h - 8 - (v / max) * (h - 16);
+    return [x, y];
+  });
+  var last = pts[pts.length - 1];
+  el('evo').innerHTML = R.total > 0
+    ? '<svg viewBox="0 0 ' + w + ' ' + h + '" class="w-full"><polyline fill="none" stroke="#94A3B8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="' +
+      pts.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ') +
+      '"/><circle cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="4" fill="#F1F5F9"/></svg>' +
+      '<div class="flex justify-between lbl mt-2"><span>Día 1</span><span>Día ' + n + '</span></div>'
+    : '<div class="lbl">Sin datos</div>';
+
+  var tot = R.dona.reduce(function (s, x) { return s + x.m; }, 0), off = 0, C = 2 * Math.PI * 40;
+  if (tot > 0) {
+    var segs = R.dona.map(function (x, i) {
+      var l = x.m / tot * C;
+      var s = '<circle cx="60" cy="60" r="40" fill="none" stroke="' + COLORS[i % 5] + '" stroke-width="16" stroke-dasharray="' + l.toFixed(2) + ' ' + (C - l).toFixed(2) + '" stroke-dashoffset="' + (-off).toFixed(2) + '" transform="rotate(-90 60 60)"/>';
+      off += l; return s;
+    }).join('');
+    var leg = R.dona.map(function (x, i) {
+      return '<div class="flex items-center gap-2"><span style="width:8px;height:8px;border-radius:9999px;background:' + COLORS[i % 5] + '"></span><span class="flex-1 truncate">' + esc(x.c) + '</span><span class="lbl">' + Math.round(x.m / tot * 100) + '%</span></div>';
+    }).join('');
+    el('dona').innerHTML = '<div class="flex items-center gap-6"><svg viewBox="0 0 120 120" style="width:128px;height:128px;flex:none">' + segs + '</svg><div class="flex-1 space-y-2" style="min-width:0">' + leg + '</div></div>';
+  } else el('dona').innerHTML = '<div class="lbl">Sin datos</div>';
+
+  el('last').innerHTML = R.last.length ? R.last.map(function (x) {
+    return '<div class="flex justify-between items-center gap-4"><div style="min-width:0"><div class="truncate">' + esc(x.d || x.c) + '</div><div class="lbl">' + esc(x.f) + '</div></div><div>' + fmt(x.m) + '</div></div>';
+  }).join('') : '<div class="lbl">Sin movimientos</div>';
+}
+
+function load() {
+  el('syncI').classList.add('animate-spin');
+  api('getInit')
+    .then(function (d) {
+      cats = d.cats; R = d.resumen;
+      if (cats.indexOf(sel) < 0) sel = cats[0] || '';
+      chips(); draw();
+    })
+    .catch(function (e) { flash('err', e.message); })
+    .then(function () { el('syncI').classList.remove('animate-spin'); });
+}
+
+el('chips').addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+el('chips').addEventListener('click', function (ev) {
+  var b = ev.target.closest('button');
+  if (!b) return;
+  sel = cats[Number(b.getAttribute('data-i'))]; chips(); el('monto').focus();
+});
+el('save').addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+el('save').addEventListener('click', guardar);
+el('sync').addEventListener('click', load);
+el('detalle').addEventListener('keydown', function (ev) { if (ev.key === 'Enter') guardar(); });
+el('monto').addEventListener('input', function () { this.value = this.value.replace(/[^0-9.,]/g, ''); });
+
+if (!IN_GAS && 'serviceWorker' in navigator) {
+  var lk = document.createElement('link'); lk.rel = 'manifest'; lk.href = 'manifest.json'; document.head.appendChild(lk);
+  navigator.serviceWorker.register('sw.js');
+}
+load();
+el('monto').focus();
+</script>
+</body>
+</html>
